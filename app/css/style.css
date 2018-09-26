@@ -1,0 +1,57 @@
+#overlay {
+	position: fixed;
+	top: 0px;
+	left: 0px;
+	width: 100%;
+	height: 100%;
+	background-color: #444;
+	opacity: 0.5;
+	z-index: -10000;
+}
+
+#overlay.loading {
+	z-index: 10000;
+}
+
+html, body, #app {
+	width: 100%;
+	height: 100%;
+}
+
+.breadcrumb, .balance {
+    display: block;
+}
+
+#initial-loader-div {
+    overflow: hidden;
+}
+
+#initial-loader-div.hidden {
+    height: 0px;
+}
+
+#initial-loader {
+    width: 44px;
+    height: 44px;
+}
+
+.ios .list .item-content.subitem {
+	color: #000;
+}
+
+.ios .list .item-content.subitem .positive-value {
+	color: #080;
+}
+
+.ios .list .item-content.subitem .negative-value {
+	color: #f00;
+}
+
+/* Screen scrolling issues */
+/* These are commented out for repro purposes
+.page-content{ overflow: auto !important; -webkit-overflow-scrolling: touch !important; }
+.tab { overflow:auto; -webkit-overflow-scrolling:touch; }
+.tab .content-block { overflow:auto; -webkit-overflow-scrolling: touch;}
+.tab .page-content { overflow:auto; -webkit-overflow-scrolling: touch;}
+.accordion-item-content {-webkit-transform: none; transform: none; overflow:auto; -webkit-overflow-scrolling: touch;}
+*/
