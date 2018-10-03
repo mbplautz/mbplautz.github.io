@@ -158,6 +158,11 @@ app.on('init', function(e) {
         data: modelMaster.navbar
     });
 
+    // Add request listener
+    $$('.ajax-request').on('click', function () {
+        app.request.post('/app/index.html', { isAString: 'true', isABoolean: true, isNull: null, isObject: { yes: 'itIsAnObject' } }, console.log, console.err);
+    });
+
     // Perform the initial data request
     // This is a mock response of the initial data
     setTimeout(function() {
