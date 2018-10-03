@@ -1,0 +1,2 @@
+webpackJsonp([1],{NHnr:function(e,a,n){"use strict";Object.defineProperty(a,"__esModule",{value:!0});var t=n("7+uW"),p=n("GLwI"),r=n("+zVC");p.a.use(r.a),new t.a({el:"#app",data:function(){return{f7params:{name:"My App",id:"com.myapp.test"}}},methods:{}})}},["NHnr"]);
+//# sourceMappingURL=app.b57581ded3cc4883b9d4.js.map
