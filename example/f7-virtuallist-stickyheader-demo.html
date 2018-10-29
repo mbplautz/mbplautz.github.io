@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- Required meta tags-->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, minimal-ui, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <!-- Color theme for statusbar -->
+    <meta name="theme-color" content="#2196f3">
+    <!-- Your app title -->
+    <title>My App</title>
+    <!-- Path to Framework7 Library CSS -->
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/framework7/3.2.0/css/framework7.css">
+	<style type="text/css">
+		.moving-div {
+			position: relative;
+		}
+		
+		.list.virtual-list ul div.list-group.moving-div ul {
+			padding-left: 0;
+		}
+	</style>
+  </head>
+  <body>
+    <!-- App root element -->
+    <div id="app">
+      <!-- Your main view, should have "view-main" class -->
+      <div class="view view-main" data-url="/">
+        <!-- Initial Page, "data-name" contains page name -->
+        <div data-name="home" class="page">
+
+          <!-- Top Navbar -->
+          <div class="navbar">
+            <div class="navbar-inner">
+			  <div class="left"><a href="#" class="panel-open">&#9776;</a></div>
+              <div class="title">My App</div>
+              
+            </div>
+          </div>
+          <!-- Scrollable page content -->
+          <div class="page-content">
+            <div class="block-title">Virtual List with Sticky Headers</div>
+            <div class="list links-list virtual-list">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/framework7/3.2.0/js/framework7.min.js"></script>
+    <script type="text/javascript">
+		var app = new Framework7({
+			// App root element
+			root: '#app',
+			// App Name
+			name: 'My App',
+			// App id
+			id: 'com.myapp.test',
+			theme: 'ios'
+		});
+
+		// A quick way to mock some hierarchical data, as if it came as a JSON payload from an API call
+		var counts = [40, 50, 30, 5, 20, 90, 10];
+		var hierarchyData = [];
+		Array.prototype.push.apply(hierarchyData, counts.map(function(count, index) {
+			var item = {
+				name: 'Item ' + (index + 1),
+				count: count,
+				subItems: []
+			};
+			Array.prototype.forEach.call('x'.repeat(count), function(_, subIndex) { item.subItems.push({ name: 'Item ' + (index + 1) + '.' + (subIndex + 1) }); });
+			
+			return item;
+		}));
+		
+		// Build a flat list from the hierarchy data
+		var listData = [];
+		hierarchyData.forEach(function(item) {
+			item.subItems.forEach(function(subItem) {
+				// Here is the key for getting stick headers
+				// Make sure the header title is set for each individual item
+				subItem.header = item.name;
+				
+				listData.push(subItem);
+			});
+		});
+		
+		function createItemDiv() {
+			var d = document.createElement('div');
+			d.className = 'list-group moving-div';
+			var u = document.createElement('ul');
+			d.appendChild(u);
+			return { d, u };
+		}
+		
+		function onVirtualBeforeInsert(vlist, fragment) {
+			var self = this;
+			var list = Dom7(vlist.ul);
+			
+			var virtualItems = [];
+			var first = true;
+			var top;
+			while (fragment.hasChildNodes()) {
+				var c = fragment.removeChild(fragment.firstChild);
+				if (first) {
+					first = false;
+					top = c.style.top;
+				}
+				Dom7(c).css('top', '');
+				virtualItems.push(c);
+			}
+			
+			var previousName = null;
+			var addedHeaders = [];
+			var e;
+
+			virtualItems.forEach(item => {
+				var headerName = Dom7(item).attr('data-header-name');
+				if (previousName !== headerName) {
+					previousName = headerName;
+					e = createItemDiv();
+					fragment.appendChild(e.d);
+					Dom7(e.d).css('top', top);
+					var h = document.createElement('li');
+					h.className = 'list-group-title';
+					h.appendChild(document.createTextNode(headerName));
+					e.u.appendChild(h);
+				}
+				
+				e.u.appendChild(item);
+				
+			});
+			
+			vlist.setListSize();
+			list.css({ height: `${list.height() + ((app.theme == 'ios' ? 31 : 48) * addedHeaders.length)}px` });
+		}
+		
+		var virtualList = app.virtualList.create({
+			el: '.virtual-list',
+			items: listData,
+			height: app.theme === 'ios' ? 44 : 54,
+			itemTemplate: '<li data-header-name="{{header}}"><a href="#">{{name}}</a></li>',
+			on: {
+				itemsBeforeInsert: onVirtualBeforeInsert
+			}
+		});
+		
+    </script>
+  </body>
+</html>  
