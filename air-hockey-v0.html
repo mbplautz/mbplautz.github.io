@@ -1,0 +1,885 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>Touch Air-Hockey</title>
+<style>
+  html,body {
+    margin:0;
+    height:100%;
+    background: #fff;
+    -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+    -ms-touch-action: none; touch-action: none;
+    overflow:hidden;
+  }
+  #gameWrap {
+    position:fixed;
+    left:0; top:0; right:0; bottom:0;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    background: #fff;
+  }
+  canvas { display:block; }
+  /* Fallback for fonts etc. */
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="gameCanvas"></canvas>
+</div>
+
+<script>
+/*
+  Air Hockey - single-file implementation
+  Constants (easily editable)
+*/
+const PADDLE_W = 44;          // paddle width in px
+const PADDLE_H = 120;         // paddle height in px
+const BALL_R   = 20;          // ball radius in px
+const MIN_SPEED = 360;        // px/sec - ball default minimum speed
+const MAX_SPEED = 1200;       // px/sec - ball speed cap
+const SPEED_ON_HIT_FORWARD_MULT = 1.5; // forward motion can increase speed (multiplicative cap)
+const TARGET_SCORE = 10;      // points to win
+const OVERLAY_FADE_MS = 500;  // fade overlay when scoring
+const MESSAGE_MS = 1500;      // message visible
+const AFTER_MESSAGE_DELAY_MS = 500; // delay before next round
+
+// Canvas and game state
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let boardW = 0, boardH = 0;   // computed on Start
+let boardFixed = false;      // board frozen once Start pressed
+let devicePixelRatioBacking = window.devicePixelRatio || 1;
+
+// UI geometry (computed after board size set)
+let scoreBox = { x:0,y:0,w:0,h:0 };
+let pauseBtn = { x:0,y:0,r:0 }; // circle
+let resetBtn = { x:0,y:0,r:0,visible:false };
+let startButtonRect = { x:0,y:0,w:0,h:0,visible:true };
+
+// Game objects
+const player = {
+  1: { score:0, paddle: { x:0,y:0,w:PADDLE_W,h:PADDLE_H, vx:0, vy:0 }, side: 'left' }, // left player
+  2: { score:0, paddle: { x:0,y:0,w:PADDLE_W,h:PADDLE_H, vx:0, vy:0 }, side: 'right' } // right player
+};
+let ball = { x:0,y:0, vx:0, vy:0, r:BALL_R, speed: MIN_SPEED };
+
+// Interaction
+let ongoingTouches = {}; // touchId -> {playerIndex, lastX,lastY, lastTime}
+let mouseDrag = null; // fallback for desktop
+
+// Game flow / timestamps
+let running = false;    // game running flag (rounds active)
+let paused = false;
+let gameOver = false;
+let countingDown = false; // start sequence
+let countdownVal = 3;
+let countdownStartTS = 0;
+
+let roundActive = false; // currently ball moving
+let lastFrameTS = 0;
+
+let overlay = { active:false, start:0, winner:0, fading:false, alpha:0 };
+let message = { text:'', start:0, visible:false, persistent:false };
+
+// Audio setup
+const audioCtx = (typeof AudioContext !== 'undefined') ? new AudioContext() : null;
+function playClink() {
+  if(!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine';
+  o.frequency.value = 1500;
+  g.gain.value = 0.0001;
+  o.connect(g);
+  g.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  g.gain.linearRampToValueAtTime(0.08, now + 0.005);
+  g.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+  o.start(now);
+  o.stop(now + 0.13);
+}
+
+// Helpers
+function clamp(v,a,b){ return Math.max(a,Math.min(b,v)); }
+function rand(min,max){ return Math.random()*(max-min)+min; }
+function degToRad(d){ return d*Math.PI/180; }
+
+// Set up canvas size when Start Game pressed
+function setBoardSizeToLandscapeAndFix(){
+  // choose wider dimension to be board width (longer edge)
+  const sw = window.innerWidth;
+  const sh = window.innerHeight;
+  boardW = Math.max(sw, sh);
+  boardH = Math.min(sw, sh);
+  // scale canvas for device pixel ratio
+  devicePixelRatioBacking = window.devicePixelRatio || 1;
+  canvas.style.width = boardW + 'px';
+  canvas.style.height = boardH + 'px';
+  canvas.width = Math.round(boardW * devicePixelRatioBacking);
+  canvas.height = Math.round(boardH * devicePixelRatioBacking);
+  ctx.setTransform(devicePixelRatioBacking, 0, 0, devicePixelRatioBacking, 0, 0);
+  boardFixed = true;
+  computeUIGeometry();
+  resetPaddlesToStart();
+  draw(); // initial draw
+}
+
+// compute UI geometry (score box, buttons) per rules
+function computeUIGeometry(){
+  // Score box: one-eighth screen height and one-eighth screen width
+  const sbH = boardH / 8;
+  const sbW = boardW / 8;
+  scoreBox.w = sbW;
+  scoreBox.h = sbH;
+  scoreBox.x = (boardW - (sbW + sbH + 12)) / 2 - (sbW/2); // we want it centered horizontally relative? Simpler: place centered horizontally
+  // Simpler placement: centered horizontally
+  scoreBox.x = (boardW - sbW) / 2;
+  scoreBox.y = 6; // small margin from top
+
+  // pause button circle to right of score box, circle equal in height to scoreBox
+  pauseBtn.r = sbH/2;
+  pauseBtn.x = scoreBox.x + scoreBox.w + pauseBtn.r + 12; // 12px gap
+  pauseBtn.y = scoreBox.y + sbH/2;
+  // reset button to left of score box (same size)
+  resetBtn.r = pauseBtn.r;
+  resetBtn.x = scoreBox.x - resetBtn.r - 12;
+  resetBtn.y = pauseBtn.y;
+  resetBtn.visible = false;
+
+  // Start button rect (centered)
+  startButtonRect.h = boardH / 8;
+  startButtonRect.w = boardW / 3;
+  startButtonRect.x = (boardW - startButtonRect.w)/2;
+  startButtonRect.y = (boardH - startButtonRect.h)/2;
+  startButtonRect.visible = true;
+}
+
+// reposition paddles to start (center vertically, offset one twentieth board width from each side)
+function resetPaddlesToStart(){
+  const offset = boardW / 20;
+  const p1 = player[1].paddle;
+  const p2 = player[2].paddle;
+  p1.x = offset + p1.w/2;
+  p1.y = boardH/2;
+  p1.vx = 0; p1.vy = 0;
+  p2.x = boardW - offset - p2.w/2;
+  p2.y = boardH/2;
+  p2.vx = 0; p2.vy = 0;
+}
+
+// Convert game px to integers for crisp drawing
+function crisp(v){ return Math.round(v) + 0.5; }
+
+// Start game sequence (Start pressed or reset)
+function startNewGameSequence(){
+  // reset scores and state
+  player[1].score = 0;
+  player[2].score = 0;
+  gameOver = false;
+  paused = false;
+  running = true;
+  resetBtn.visible = false;
+  startButtonRect.visible = false;
+  resetPaddlesToStart();
+  scheduleCountdown();
+}
+
+// schedule countdown
+function scheduleCountdown(){
+  countingDown = true;
+  countdownVal = 3;
+  countdownStartTS = performance.now();
+  // paddles immobile until countdown ends
+  roundActive = false;
+}
+
+// start next round (ball spawn and movement)
+function beginRound(){
+  // position ball in center and pick random angle between -45 and +45 degrees
+  ball.x = boardW / 2;
+  ball.y = boardH / 2;
+  const angDeg = rand(-45, 45);
+  const dir = Math.random() < 0.5 ? -1 : 1; // toward left (-1) or right (1)
+  const angRad = degToRad(angDeg);
+  ball.speed = MIN_SPEED;
+  ball.vx = Math.cos(angRad) * ball.speed * dir;
+  ball.vy = Math.sin(angRad) * ball.speed;
+  roundActive = true;
+  lastFrameTS = performance.now();
+}
+
+// Pause / resume functions
+function pauseGame(){
+  paused = true;
+  resetBtn.visible = true;
+}
+function resumeGame(){
+  paused = false;
+  resetBtn.visible = false;
+  lastFrameTS = performance.now();
+}
+
+// Reset entire game (used by reset button)
+function resetGame(){
+  running = false;
+  paused = false;
+  gameOver = false;
+  roundActive = false;
+  countingDown = false;
+  startButtonRect.visible = true;
+  resetBtn.visible = false;
+  message.visible = false;
+  player[1].score = 0;
+  player[2].score = 0;
+  resetPaddlesToStart();
+  draw();
+}
+
+// Touch & mouse handling (paddle dragging)
+function findPaddleAtPoint(x,y){
+  // return 1 or 2 if point inside paddle rect
+  for(const idx of [1,2]){
+    const p = player[idx].paddle;
+    if (x >= p.x - p.w/2 && x <= p.x + p.w/2 && y >= p.y - p.h/2 && y <= p.y + p.h/2) {
+      return idx;
+    }
+  }
+  return null;
+}
+
+function onPointerStart(id, x, y, time){
+  // Check UI buttons first: pause, reset, start
+  if(startButtonRect.visible && pointInRect(x,y, startButtonRect)) {
+    // Start pressed
+    startButtonRect.visible = false;
+    setBoardSizeToLandscapeAndFix();
+    setTimeout(()=>{ startNewGameSequence(); }, 50);
+    return;
+  }
+  if(!boardFixed) return;
+  // pause button only visible when running and not gameOver and not before first game
+  if(running && !gameOver && pointInCircle(x,y,pauseBtn)){
+    if(!paused) { pauseGame(); } else { resumeGame(); }
+    return;
+  }
+  if(resetBtn.visible && pointInCircle(x,y,resetBtn)){
+    // Reset game
+    resetGame();
+    // Immediately start start sequence since reset shows startButton per spec
+    return;
+  }
+  // If game over and reset button visible, pressing reset should restart game (handled above)
+
+  // handle paddle drag: only start drag if touch inside paddle rect
+  const found = findPaddleAtPoint(x,y);
+  if(found){
+    ongoingTouches[id] = { playerIdx: found, lastX: x, lastY: y, lastTime: time };
+  }
+}
+
+function onPointerMove(id, x, y, time){
+  if(!boardFixed) return;
+  if(ongoingTouches[id]){
+    const touch = ongoingTouches[id];
+    const idx = touch.playerIdx;
+    const pad = player[idx].paddle;
+    // move paddle: dragging required (difference)
+    const dx = x - touch.lastX;
+    const dy = y - touch.lastY;
+    // Update velocity (use time delta)
+    const dt = Math.max(1, time - touch.lastTime) / 1000;
+    pad.vx = dx / dt;
+    pad.vy = dy / dt;
+    // Apply movement: allow paddle to move across full board height (y), and into allowed x range within player's half
+    pad.x += dx;
+    pad.y += dy;
+    constrainPaddleToZone(idx);
+    touch.lastX = x;
+    touch.lastY = y;
+    touch.lastTime = time;
+  } else if(mouseDrag){
+    // desktop: mouse drag (mouseDrag holds playerIdx)
+    const idx = mouseDrag.playerIdx;
+    const pad = player[idx].paddle;
+    const dx = x - mouseDrag.lastX;
+    const dy = y - mouseDrag.lastY;
+    const dt = Math.max(1, time - mouseDrag.lastTime) / 1000;
+    pad.vx = dx / dt;
+    pad.vy = dy / dt;
+    pad.x += dx;
+    pad.y += dy;
+    constrainPaddleToZone(idx);
+    mouseDrag.lastX = x; mouseDrag.lastY = y; mouseDrag.lastTime = time;
+  }
+}
+
+function onPointerEnd(id){
+  if(ongoingTouches[id]) delete ongoingTouches[id];
+  if(mouseDrag) mouseDrag = null;
+}
+
+// helper shapes
+function pointInRect(x,y, r){
+  return (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h);
+}
+function pointInCircle(x,y, c){
+  const dx = x - c.x; const dy = y - c.y;
+  return dx*dx + dy*dy <= c.r*c.r;
+}
+
+// constrain paddle movement per rules
+function constrainPaddleToZone(idx){
+  const pad = player[idx].paddle;
+  // vertical clamp: full height
+  pad.y = clamp(pad.y, pad.h/2, boardH - pad.h/2);
+  // horizontal clamp depends on which player: they can move within 2/3 of their half towards center
+  const half = boardW / 2;
+  const allowedInward = (half) * (2/3); // from their end toward center
+  if (idx === 1) {
+    // left player's x should be between pad.w/2 and pad.w/2 + allowedInward
+    pad.x = clamp(pad.x, pad.w/2, pad.w/2 + allowedInward);
+  } else {
+    // right: between boardW - pad.w/2 - allowedInward and boardW - pad.w/2
+    pad.x = clamp(pad.x, boardW - pad.w/2 - allowedInward, boardW - pad.w/2);
+  }
+}
+
+// Collision detection helpers
+function rectCircleCollide(px,py,pw,ph, cx,cy, r){
+  // rectangle center px,py ; rectangle width pw height ph
+  const rx = px - pw/2, ry = py - ph/2;
+  // find closest point to circle
+  const closestX = clamp(cx, rx, rx + pw);
+  const closestY = clamp(cy, ry, ry + ph);
+  const dx = cx - closestX;
+  const dy = cy - closestY;
+  return (dx*dx + dy*dy) <= r*r;
+}
+
+// On paddle collision, compute bounce and speed adjustments
+function handlePaddleCollision(idx){
+  const pad = player[idx].paddle;
+  // compute relative hit position along pad's vertical center (y direction)
+  // map top to -1, center 0, bottom +1
+  const rel = (ball.y - pad.y) / (pad.h/2);
+  const limited = clamp(rel, -1, 1);
+  // angle mapping: -1 -> -60deg, 0 -> 0deg, +1 -> +60deg
+  const angleDeg = limited * 60;
+  // set ball direction to away from that player's end toward opponent
+  const dir = (idx === 1) ? 1 : -1; // If left paddle hit, ball goes to right (dir=1)
+  const angRad = degToRad(angleDeg);
+  // compute unit vector
+  const ux = Math.cos(angRad) * dir;
+  const uy = Math.sin(angRad);
+  // velocity magnitude: either default or boosted if paddle moving forward
+  const paddleForwardVel = idx === 1 ? pad.vx : -pad.vx; // positive means moving toward center
+  let newSpeed = MIN_SPEED;
+  if (paddleForwardVel > 60) { // threshold to count as forward motion
+    newSpeed = clamp(ball.speed * SPEED_ON_HIT_FORWARD_MULT, MIN_SPEED, MAX_SPEED);
+  } else {
+    newSpeed = MIN_SPEED;
+  }
+  ball.speed = clamp(newSpeed, MIN_SPEED, MAX_SPEED);
+  ball.vx = ux * ball.speed;
+  ball.vy = uy * ball.speed;
+  // nudge ball out of paddle to avoid sticking
+  const push = (ball.r + Math.max(pad.w,pad.h)/2) + 1;
+  if(idx === 1) ball.x = pad.x + pad.w/2 + ball.r + 1;
+  else ball.x = pad.x - pad.w/2 - ball.r - 1;
+  playClink();
+}
+
+// handle side (top/bottom) collisions - reflect vy
+function handleSideCollision(){
+  ball.vy = -ball.vy;
+  // preserve speed (vx sign preserved), adjust vy accordingly to maintain speed magnitude
+  const currentSpeed = Math.hypot(ball.vx, ball.vy);
+  // scale to ball.speed
+  const scale = ball.speed / currentSpeed;
+  ball.vx *= scale;
+  ball.vy *= scale;
+  playClink();
+}
+
+// check if ball left any player's end -> scoring
+function checkScoring(){
+  // Ends are left and right edges (ball.x - r <= 0 => left end)
+  if (ball.x - ball.r <= 0) {
+    // ball left left end -> player 2 scores
+    scoringEvent(2);
+    return true;
+  } else if (ball.x + ball.r >= boardW) {
+    scoringEvent(1);
+    return true;
+  }
+  return false;
+}
+
+// scoring flow
+function scoringEvent(scoringPlayerIdx){
+  // other player index is scoringPlayerIdx (as per requirement)
+  const winnerIdx = scoringPlayerIdx;
+  // increment score
+  player[winnerIdx].score += 1;
+  roundActive = false;
+  overlay.active = true;
+  overlay.start = performance.now();
+  overlay.alpha = 0;
+  overlay.fading = true;
+  overlay.winner = winnerIdx;
+  // message box text
+  if (player[winnerIdx].score >= TARGET_SCORE) {
+    // final
+    message.text = `Player ${winnerIdx} Wins`;
+    message.persistent = true;
+    gameOver = true;
+    running = false;
+    // when game over, pause/pause button hidden per spec: so pause button invisible - we'll set running false so button hidden
+    resetBtn.visible = true; // show reset button
+  } else {
+    message.text = `Player ${winnerIdx} Score`;
+    message.persistent = false;
+  }
+  message.start = performance.now();
+  message.visible = true;
+  // overlay fade handled in loop; next round scheduled AFTER message disappears and AFTER extra 500ms
+}
+
+// Game update loop
+function update(ts){
+  if(!boardFixed){ draw(); requestAnimationFrame(update); return; }
+  if(!lastFrameTS) lastFrameTS = ts;
+  const dtSec = Math.min(0.05, (ts - lastFrameTS)/1000);
+  lastFrameTS = ts;
+
+  // countdown handling
+  if(countingDown){
+    const elapsed = ts - countdownStartTS;
+    const newVal = 3 - Math.floor(elapsed / 1000);
+    if(newVal !== countdownVal){
+      countdownVal = newVal;
+    }
+    if(elapsed >= 3000){
+      countingDown = false;
+      beginRound();
+    }
+  }
+
+  if(running && !paused && roundActive){
+    // integrate ball
+    // update ball speed magnitude in case it changed by collisions
+    // move ball
+    ball.x += ball.vx * dtSec;
+    ball.y += ball.vy * dtSec;
+
+    // side collision (top/bottom)
+    if(ball.y - ball.r <= 0){
+      ball.y = ball.r;
+      handleSideCollision();
+    } else if (ball.y + ball.r >= boardH){
+      ball.y = boardH - ball.r;
+      handleSideCollision();
+    }
+
+    // paddle collisions
+    for(const idx of [1,2]){
+      const pad = player[idx].paddle;
+      if(rectCircleCollide(pad.x,pad.y,pad.w,pad.h, ball.x, ball.y, ball.r)){
+        // only handle collision if ball is moving toward paddle (avoid multiple re-collisions). Check vx direction vs paddle location
+        if( (idx === 1 && ball.vx > 0) || (idx === 2 && ball.vx < 0) ){
+          // ball moving out away from paddle - ignore
+        } else {
+          handlePaddleCollision(idx);
+        }
+      }
+    }
+
+    // scoring
+    if(checkScoring()){
+      // scoringEvent called inside
+    }
+  }
+
+  // overlay fading and message timing
+  if(overlay.active && overlay.fading){
+    const elapsed = ts - overlay.start;
+    overlay.alpha = clamp(elapsed / OVERLAY_FADE_MS, 0, 1);
+    if(overlay.alpha >= 1){
+      overlay.fading = false;
+    }
+  }
+
+  if(message.visible && !message.persistent){
+    const elapsed = ts - message.start;
+    if(elapsed >= MESSAGE_MS){
+      // hide message after MESSAGE_MS, then schedule next round after AFTER_MESSAGE_DELAY_MS
+      message.visible = false;
+      overlay.active = false;
+      setTimeout(()=>{
+        if(!gameOver){
+          beginRound();
+        }
+      }, AFTER_MESSAGE_DELAY_MS);
+    }
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+// Drawing functions
+function clearBoard(){
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0,0,boardW,boardH);
+}
+
+function draw(){
+  if(!boardFixed){
+    // initial full-window preview (landscape aware)
+    const sw = window.innerWidth;
+    const sh = window.innerHeight;
+    const w = Math.max(sw, sh);
+    const h = Math.min(sw, sh);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.width = Math.round(w * devicePixelRatioBacking);
+    canvas.height = Math.round(h * devicePixelRatioBacking);
+    ctx.setTransform(devicePixelRatioBacking,0,0,devicePixelRatioBacking,0,0);
+    boardW = w; boardH = h;
+    computeUIGeometry();
+    resetPaddlesToStart();
+  }
+
+  // full white background
+  clearBoard();
+
+  // center dividing thin red line down the middle (vertical) that goes up to the score box edge - per spec the line runs right up to the edge of the black box (score box appears over top)
+  ctx.save();
+  // draw center vertical thin line
+  const lineX = boardW/2;
+  ctx.beginPath();
+  ctx.strokeStyle = 'rgba(255,100,100,0.35)';
+  ctx.lineWidth = 2;
+  ctx.moveTo(lineX, 0);
+  // top segment to top of score box
+  ctx.lineTo(lineX, scoreBox.y);
+  ctx.stroke();
+  // bottom segment starting from bottom of score box (since score box overlays) draw remaining line
+  ctx.beginPath();
+  ctx.moveTo(lineX, scoreBox.y + scoreBox.h);
+  ctx.lineTo(lineX, boardH);
+  ctx.stroke();
+  ctx.restore();
+
+  // draw paddles (rectangular solid color)
+  ctx.fillStyle = '#1f77b4';
+  // Player 1 paddle color
+  for(const idx of [1,2]){
+    const pad = player[idx].paddle;
+    ctx.fillStyle = (idx === 1) ? '#0077cc' : '#cc0000';
+    ctx.fillRect(crisp(pad.x - pad.w/2), crisp(pad.y - pad.h/2), pad.w, pad.h);
+  }
+
+  // draw score box (black rectangle at top of screen with white text). The red center line should run under it.
+  ctx.fillStyle = '#000';
+  ctx.fillRect(scoreBox.x, scoreBox.y, scoreBox.w, scoreBox.h);
+  ctx.fillStyle = '#fff';
+  // Score text size is one tenth the screen height
+  ctx.font = `${Math.round(boardH/10)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // left and right player's score within the score box on their side: we will show "0 0" centered but arrange spacing based on sides
+  const scoreText = `${player[1].score}   ${player[2].score}`;
+  ctx.fillText(scoreText, scoreBox.x + scoreBox.w/2, scoreBox.y + scoreBox.h/2);
+
+  // draw pause/play and reset icons as circles with icons
+  // pause/play icon: black font enclosed in light grey circle, circle equal in height to scoreBox
+  ctx.fillStyle = '#ddd';
+  ctx.beginPath();
+  ctx.arc(pauseBtn.x, pauseBtn.y, pauseBtn.r, 0, Math.PI*2);
+  ctx.fill();
+  // icon (pause or play) height equals score text - draw as either pause bars or play triangle
+  ctx.fillStyle = '#000';
+  const iconH = boardH / 10;
+  if(running && !gameOver){
+    if(!paused){
+      // pause icon (two bars)
+      const barW = iconH * 0.25;
+      const gap = barW;
+      const cx = pauseBtn.x;
+      const cy = pauseBtn.y;
+      ctx.fillRect(cx - gap/2 - barW, cy - iconH/2, barW, iconH);
+      ctx.fillRect(cx + gap/2, cy - iconH/2, barW, iconH);
+    } else {
+      // play icon
+      ctx.beginPath();
+      const cx = pauseBtn.x, cy = pauseBtn.y;
+      const s = iconH/2;
+      ctx.moveTo(cx - s/2, cy - s);
+      ctx.lineTo(cx - s/2, cy + s);
+      ctx.lineTo(cx + s, cy);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else {
+    // pause button hidden when not running or gameOver: draw transparent (do nothing)
+  }
+
+  // reset button to left of score box: show only when paused or gameOver
+  if(resetBtn.visible){
+    ctx.fillStyle = '#ddd';
+    ctx.beginPath();
+    ctx.arc(resetBtn.x, resetBtn.y, resetBtn.r, 0, Math.PI*2);
+    ctx.fill();
+    // draw refresh icon (simple circular arrow)
+    ctx.save();
+    ctx.translate(resetBtn.x, resetBtn.y);
+    ctx.rotate(Math.PI/6);
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0,0, resetBtn.r*0.45, 0, Math.PI*1.5);
+    ctx.stroke();
+    // arrow head
+    ctx.beginPath();
+    ctx.moveTo(resetBtn.r*0.45 - resetBtn.r * .42, -resetBtn.r*0.05 - resetBtn.r * .54);
+    ctx.lineTo(resetBtn.r*0.65 - resetBtn.r * .42, resetBtn.r*0.12 - resetBtn.r * .54);
+    ctx.lineTo(resetBtn.r*0.42 - resetBtn.r * .42, resetBtn.r*0.26 - resetBtn.r * .54);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // draw countdown big number if countingDown
+  if(countingDown){
+    ctx.fillStyle = '#444';
+    ctx.font = `${Math.round(boardH / 4)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(String(Math.max(1, countdownVal)), boardW/2, boardH/2);
+  }
+
+  // Draw ball (last so it's above UI)
+  ctx.beginPath();
+  ctx.fillStyle = '#000';
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+  ctx.fill();
+
+  // overlay fade when scoring
+  if(overlay.active){
+    ctx.save();
+    ctx.fillStyle = `rgba(255,255,255,${1 - overlay.alpha})`;
+    ctx.fillRect(0,0,boardW,boardH);
+    ctx.restore();
+  }
+
+  // message box centered on board when scoring
+  if(message.visible){
+    const boxW = boardW / 3;
+    const boxH = boardH / 3;
+    const bx = (boardW - boxW)/2;
+    const by = (boardH - boxH)/2;
+    // semi-transparent grey rounded rect 50% transparent
+    roundRect(ctx, bx, by, boxW, boxH, 16, true, false, 'rgba(128,128,128,0.5)');
+    // text height = 1/10 screen height, wrapped to two lines
+    ctx.fillStyle = '#fff';
+    ctx.font = `${Math.round(boardH / 10)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // draw on two lines if needed
+    const parts = wrapTextIntoTwoLines(message.text, ctx, boxW * 0.9);
+    const textY = by + boxH/2;
+    if(parts.length === 1){
+      ctx.fillText(parts[0], bx + boxW/2, textY);
+    } else {
+      ctx.fillText(parts[0], bx + boxW/2, textY - (boardH/20));
+      ctx.fillText(parts[1], bx + boxW/2, textY + (boardH/20));
+    }
+  }
+}
+
+// helper: rounded rect
+function roundRect(ctx, x, y, w, h, r, fill, stroke, fillStyle){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+  if(fill){
+    ctx.fillStyle = fillStyle || '#000';
+    ctx.fill();
+  }
+  if(stroke){
+    ctx.stroke();
+  }
+}
+
+// wrap into up to 2 lines for the message box text
+function wrapTextIntoTwoLines(text, ctx, maxWidth){
+  // If fits one line, return [text]
+  if(ctx.measureText(text).width <= maxWidth) return [text];
+  // else try to split by space near middle
+  const words = text.split(' ');
+  for(let i = Math.floor(words.length/2); i < words.length; i++){
+    const line1 = words.slice(0,i).join(' ');
+    const line2 = words.slice(i).join(' ');
+    if(ctx.measureText(line1).width <= maxWidth && ctx.measureText(line2).width <= maxWidth){
+      return [line1, line2];
+    }
+  }
+  // fallback: naive split
+  const mid = Math.ceil(words.length/2);
+  return [words.slice(0,mid).join(' '), words.slice(mid).join(' ')];
+}
+
+// Event listeners for touch and mouse
+function setupEventListeners(){
+  // Unified pointer handling where possible
+  // Touch events
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    //console.log('touchstart');
+    const now = performance.now();
+    for(const t of e.changedTouches){
+      const rect = canvas.getBoundingClientRect();
+      const x = (t.clientX - rect.left) * (boardFixed ? (boardW / rect.width) : 1);
+      const y = (t.clientY - rect.top)  * (boardFixed ? (boardH / rect.height) : 1);
+      onPointerStart(t.identifier, x, y, now);
+    }
+  }, {passive:false});
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    //console.log('touchmove');
+    const now = performance.now();
+    for(const t of e.changedTouches){
+      const rect = canvas.getBoundingClientRect();
+      const x = (t.clientX - rect.left) * (boardFixed ? (boardW / rect.width) : 1);
+      const y = (t.clientY - rect.top)  * (boardFixed ? (boardH / rect.height) : 1);
+      onPointerMove(t.identifier, x, y, now);
+    }
+  }, {passive:false});
+  canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    //console.log('touchend');
+    for(const t of e.changedTouches){
+      onPointerEnd(t.identifier);
+    }
+  }, {passive:false});
+  canvas.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
+    for(const t of e.changedTouches){
+      onPointerEnd(t.identifier);
+    }
+  }, {passive:false});
+
+  // Mouse (desktop) - treat like single pointer with id 'mouse'
+  canvas.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (boardFixed ? (boardW / rect.width) : 1);
+    const y = (e.clientY - rect.top)  * (boardFixed ? (boardH / rect.height) : 1);
+    const now = performance.now();
+    // check if clicking a paddle
+    const found = findPaddleAtPoint(x,y);
+    if(found){
+      mouseDrag = { playerIdx: found, lastX: x, lastY: y, lastTime: now };
+    } else {
+      // still allow clicking UI
+      onPointerStart('mouse', x, y, now);
+    }
+  }, {passive:false});
+  window.addEventListener('mousemove', (e) => {
+    if(!mouseDrag) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (boardFixed ? (boardW / rect.width) : 1);
+    const y = (e.clientY - rect.top)  * (boardFixed ? (boardH / rect.height) : 1);
+    const now = performance.now();
+    onPointerMove('mouse', x, y, now);
+  }, {passive:false});
+  window.addEventListener('mouseup', (e) => {
+    if(mouseDrag){ mouseDrag = null; }
+  });
+
+  // Also allow clicking the start/pause/reset via clicks (works via pointerStart)
+  canvas.addEventListener('click', (e) => {
+    // handled in mousedown
+  });
+
+  // prevent resizing once board is fixed; but if user rotates before pressing Start, it's okay
+  window.addEventListener('resize', (e) => {
+    if(!boardFixed){
+      // update preview layout
+      draw();
+    } else {
+      // do nothing - board remains the fixed size
+    }
+  });
+}
+
+// Initialize
+function init(){
+  computeUIGeometry();
+  resetPaddlesToStart();
+  draw();
+  setupEventListeners();
+  requestAnimationFrame(update);
+}
+init();
+
+// Utility: check point within start button rect (using startButtonRect)
+function pointInRect(x,y, r){
+  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+}
+
+// Draw Start button overlay in main draw (we didn't in draw to keep business logic separate)
+// But we must show start button if startButtonRect.visible
+// Update draw() to include this:
+const _drawOrig = draw;
+draw = function(){
+  _drawOrig();
+  if(startButtonRect.visible){
+    // green rectangle with white text, rounded corners, thick light grey border
+    const bx = startButtonRect.x, by = startButtonRect.y, bw = startButtonRect.w, bh = startButtonRect.h;
+    // border
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = '#d3d3d3';
+    roundRect(ctx, bx, by, bw, bh, 12, true, true, '#1fa84a'); // fill green
+    ctx.strokeStyle = '#d3d3d3';
+    ctx.strokeRect(bx,by,bw,bh);
+    // text
+    ctx.fillStyle = '#fff';
+    ctx.font = `${Math.round(boardH / 10)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Start Game', bx + bw/2, by + bh/2);
+  }
+};
+
+// Fix small missing function declarations overwritten above
+function wrapTextIntoTwoLines(text, ctx, maxWidth){ 
+  if(ctx.measureText(text).width <= maxWidth) return [text];
+  const words = text.split(' ');
+  for(let i = Math.floor(words.length/2); i < words.length; i++){
+    const line1 = words.slice(0,i).join(' ');
+    const line2 = words.slice(i).join(' ');
+    if(ctx.measureText(line1).width <= maxWidth && ctx.measureText(line2).width <= maxWidth){
+      return [line1, line2];
+    }
+  }
+  const mid = Math.ceil(words.length/2);
+  return [words.slice(0,mid).join(' '), words.slice(mid).join(' ')];
+}
+
+// minor re-bind draw to ensure start button shows initially:
+draw();
+
+</script>
+</body>
+</html>
