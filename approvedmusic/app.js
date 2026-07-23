@@ -1,6 +1,7 @@
 const playlistList = document.getElementById("playlistList");
 
 const albumName = "APPROVED MUSIC BY ELDER STREETER";
+const albumArtist = "Elder Streeter";
 const albumCover = "track/album_image.png";
 const albumPlaylist = [
   {
@@ -269,7 +270,7 @@ function buildAPlayer() {
 
   aplayer = new APlayer({
     container: document.getElementById("aplayer"),
-    audio: playlist.map((track) => ({ ...track, artist: "" })),
+    audio: playlist.map((track) => ({ ...track, artist: albumArtist })),
     autoplay: false,
     theme: "#4f46e5",
     loop: "all",
