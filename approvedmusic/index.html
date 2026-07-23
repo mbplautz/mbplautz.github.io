@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>APPROVED MUSIC BY ELDER STREETER</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.css"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">APlayer MP3 player</p>
+          <h1>APPROVED MUSIC BY ELDER STREETER</h1>
+          <img src="track/album_image.png" alt="Album cover" class="album-cover" />
+          <a class="full-download" href="track/APPROVED MUSIC BY ELDER STREETER.zip" download>
+            Download Full Album
+          </a>
+        </div>
+      </header>
+
+      <main class="content-grid">
+        <section class="panel player-panel">
+          <h2>Now playing</h2>
+          <div id="aplayer"></div>
+        </section>
+
+        <section class="panel playlist-panel">
+          <div class="playlist-heading">
+            <h2>Playlist</h2>
+          </div>
+          <ul id="playlistList"></ul>
+        </section>
+      </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aplayer/1.10.1/APlayer.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
